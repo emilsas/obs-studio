@@ -9,6 +9,7 @@
 #endif
 #include <widgets/OBSBasic.hpp>
 
+#include <properties-view.hpp>
 #include <qt-wrappers.hpp>
 
 #include <QUuid>
@@ -30,6 +31,22 @@ enum class Section : int {
 	Connect,
 	StreamKey,
 };
+
+// Mandatory keys, cannot be re-declared or overwritten by custom service props
+static const char *const frontendOwnedServiceKeys[] = {
+	"server", "key", "bearer_token", "use_auth", "username", "password",
+	"service", "protocol", "using_custom_server", "bwtest",
+};
+
+static obs_properties_t *GetServiceCustomProperties(void *type_data)
+{
+	obs_properties_t *props = obs_get_service_properties((const char *)type_data);
+
+	for (const char *name : frontendOwnedServiceKeys)
+		obs_properties_remove_by_name(props, name);
+
+	return props;
+}
 
 bool OBSBasicSettings::IsCustomService() const
 {
@@ -84,6 +101,8 @@ void OBSBasicSettings::InitStreamPage()
 
 	ui->connectedAccountLabel->setVisible(false);
 	ui->connectedAccountText->setVisible(false);
+
+	ui->servicePropertiesGroupBox->setVisible(false);
 
 	int vertSpacing = ui->topStreamLayout->verticalSpacing();
 
@@ -267,6 +286,8 @@ void OBSBasicSettings::LoadStream1Settings()
 
 	ServiceChanged(true);
 
+	LoadServicePropertiesView();
+
 	UpdateKeyLink();
 	UpdateMoreInfoLink();
 	UpdateVodTrackSetting();
@@ -321,6 +342,8 @@ void OBSBasicSettings::SaveStream1Settings()
 	OBSDataAutoRelease hotkeyData = obs_hotkeys_save_service(oldService);
 
 	OBSDataAutoRelease settings = obs_data_create();
+
+	MergeServiceProperties(settings);
 
 	if (!customServer && customServiceTypeId.isEmpty()) {
 		obs_data_set_string(settings, "service", QT_TO_UTF8(ui->service->currentText()));
@@ -574,6 +597,92 @@ void OBSBasicSettings::LoadServices(bool showAll)
 	ui->service->blockSignals(false);
 }
 
+static bool service_has_custom_properties(const char *serviceId)
+{
+	obs_properties_t *props = GetServiceCustomProperties((void *)serviceId);
+	const bool any = obs_properties_first(props) != nullptr;
+	obs_properties_destroy(props);
+	return any;
+}
+
+void OBSBasicSettings::LoadServicePropertiesView()
+{
+	ClearServicePropertiesView();
+
+	if (!IsCustomServiceType())
+		return;
+
+	const QString serviceId = GetCustomServiceTypeId();
+	const QByteArray serviceIdUtf8 = serviceId.toUtf8();
+
+	if (!service_has_custom_properties(serviceIdUtf8.constData()))
+		return;
+
+	OBSData settings = SeedServicePropertiesSettings(serviceIdUtf8.constData());
+
+	streamProperties = new OBSPropertiesView(settings, serviceIdUtf8.constData(),
+						 GetServiceCustomProperties, 170);
+
+	streamProperties->ReloadProperties();
+	streamProperties->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+	streamProperties->setScrolling(false);
+	streamPropertiesId = serviceId;
+
+	// Connected late so the constructor's own queued ReloadProperties() - which runs
+	// after loading is cleared - cannot dirty the dialog. Posted events run FIFO.
+	OBSPropertiesView *view = streamProperties;
+	QMetaObject::invokeMethod(
+		this,
+		[this, view]() {
+			if (streamProperties == view)
+				connect(view, &OBSPropertiesView::Changed, this,
+					&OBSBasicSettings::Stream1Changed);
+		},
+		Qt::QueuedConnection);
+
+	ui->servicePropertiesLayout->addWidget(streamProperties);
+	ui->servicePropertiesGroupBox->setVisible(true);
+}
+
+void OBSBasicSettings::ClearServicePropertiesView()
+{
+	delete streamProperties; // the QLayout drops the destroyed widget itself
+	streamProperties = nullptr;
+	streamPropertiesId.clear();
+	ui->servicePropertiesGroupBox->setVisible(false);
+}
+
+OBSData OBSBasicSettings::SeedServicePropertiesSettings(const char *serviceId) const
+{
+	OBSDataAutoRelease settings = obs_service_defaults(serviceId);
+	if (!settings)
+		settings = obs_data_create();
+
+	obs_service_t *live = main->GetService();
+	const char *liveType = live ? obs_service_get_type(live) : nullptr;
+	if (liveType && strcmp(serviceId, liveType) == 0) {
+		OBSDataAutoRelease liveSettings = obs_service_get_settings(live);
+		obs_data_apply(settings, liveSettings);
+	}
+
+	for (const char *name : frontendOwnedServiceKeys)
+		obs_data_erase(settings, name);
+
+	return settings.Get();
+}
+
+void OBSBasicSettings::MergeServiceProperties(obs_data_t *settings) const
+{
+	if (!streamProperties || streamPropertiesId.isEmpty() || streamPropertiesId != GetCustomServiceTypeId())
+		return;
+
+	obs_data_t *props = streamProperties->GetSettings();
+
+	OBSDataAutoRelease defaults = obs_data_get_defaults(props);
+	obs_data_apply(settings, defaults);
+	obs_data_apply(settings, props);
+}
+
 static inline bool is_auth_service(const std::string &service)
 {
 	return Auth::AuthType(service) != Auth::Type::None;
@@ -648,6 +757,8 @@ void OBSBasicSettings::on_service_currentIndexChanged(int idx)
 	}
 
 	ServiceChanged();
+
+	LoadServicePropertiesView();
 
 	UpdateMoreInfoLink();
 	UpdateServerList();
@@ -846,6 +957,8 @@ OBSService OBSBasicSettings::SpawnTempService()
 	}
 
 	OBSDataAutoRelease settings = obs_data_create();
+
+	MergeServiceProperties(settings);
 
 	if (!custom && customServiceTypeId.isEmpty()) {
 		obs_data_set_string(settings, "service", QT_TO_UTF8(ui->service->currentText()));

@@ -592,7 +592,12 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 	}
 
 	// This can fail depending on hardware configuration
-	code = session_set_prop(s, kVTCompressionPropertyKey_RealTime, kCFBooleanFalse);
+	// TEST: build marker to verify OBS is actually running THIS binary.
+	// Bump the NNN number on each rebuild to distinguish builds in the log.
+	CFBooleanRef vt_realtime = kCFBooleanTrue;
+	VT_BLOG(LOG_INFO, ">>>>> OBS-MOQ VT-BUILD-MARKER-005 : setting RealTime=%s <<<<<",
+		vt_realtime == kCFBooleanTrue ? "TRUE" : "FALSE");
+	code = session_set_prop(s, kVTCompressionPropertyKey_RealTime, vt_realtime);
 	if (code != noErr)
 		log_osstatus(LOG_WARNING, enc,
 			     "setting kVTCompressionPropertyKey_RealTime failed, "
