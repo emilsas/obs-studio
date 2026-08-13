@@ -33,6 +33,32 @@ extern "C" {
 #define OBS_OUTPUT_MULTI_TRACK_VIDEO (1 << 6)
 #define OBS_OUTPUT_MULTI_TRACK_AV (OBS_OUTPUT_MULTI_TRACK_AUDIO | OBS_OUTPUT_MULTI_TRACK_VIDEO)
 
+/*
+ * Deliver encoded packets as soon as each encoder produces them, instead of
+ * through the A/V interleaver.
+ *
+ * By default an encoded output carrying both video and audio gets
+ * interleave_packets(), which holds a packet until a packet of the OPPOSING
+ * type with a higher timestamp has arrived, so the muxed stream is monotonic.
+ * That couples video latency to the whole audio pipeline (the audio mix
+ * quantum, the audio encoder's frame size, and per-source buffering), and it
+ * costs the same delay no matter how fast the video encoder is.
+ *
+ * Monotonic cross-A/V ordering is a CONTAINER requirement. An output whose
+ * transport carries each elementary stream independently and whose receiver
+ * synchronises from media timestamps (e.g. per-track streams with capture
+ * timestamps) gains nothing from it and should set this flag.
+ *
+ * Consequences the output MUST handle:
+ *  - No first-keyframe gating. The interleaver discards video until the first
+ *    keyframe; this path does not, so the first video packet may be a delta.
+ *  - No cross-type ordering or timestamp-offset normalisation. Packets arrive
+ *    per encoder, in each encoder's own order.
+ * Ignored unless both video and audio are present (there is nothing to
+ * interleave otherwise).
+ */
+#define OBS_OUTPUT_NO_INTERLEAVE (1 << 7)
+
 #define MAX_OUTPUT_AUDIO_ENCODERS 6
 #define MAX_OUTPUT_VIDEO_ENCODERS 10
 

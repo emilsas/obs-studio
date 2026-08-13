@@ -595,13 +595,32 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 	// TEST: build marker to verify OBS is actually running THIS binary.
 	// Bump the NNN number on each rebuild to distinguish builds in the log.
 	CFBooleanRef vt_realtime = kCFBooleanTrue;
-	VT_BLOG(LOG_INFO, ">>>>> OBS-MOQ VT-BUILD-MARKER-005 : setting RealTime=%s <<<<<",
+	VT_BLOG(LOG_INFO, ">>>>> OBS-MOQ VT-BUILD-MARKER-006 : setting RealTime=%s MaxFrameDelayCount=1 <<<<<",
 		vt_realtime == kCFBooleanTrue ? "TRUE" : "FALSE");
 	code = session_set_prop(s, kVTCompressionPropertyKey_RealTime, vt_realtime);
 	if (code != noErr)
 		log_osstatus(LOG_WARNING, enc,
 			     "setting kVTCompressionPropertyKey_RealTime failed, "
 			     "frame delay might be increased",
+			     code);
+
+	/* LOW LATENCY: cap how many frames the encoder may hold before emitting.
+	 * Upstream OBS never sets this, so VT defaults to
+	 * kVTUnlimitedFrameDelayCount and picks its own pipeline depth from load
+	 * heuristics -- measured here as a capture->handoff delay that was STABLE
+	 * within a run but jumped between runs (89 ms ~= 5 frames vs 171 ms ~= 10
+	 * frames @60fps) with byte-identical encoder settings, tracking the
+	 * drawn-minus-output frame delta each time. RealTime=true alone does not
+	 * bound it, and neither does disabling B-frames (tested: latency did not
+	 * drop). 1 = one-in-one-out, which is what a live pipeline wants.
+	 *
+	 * Non-fatal on failure: it is a hint, and some hardware configurations
+	 * refuse it (same rationale as RealTime above). */
+	code = session_set_prop_int(s, kVTCompressionPropertyKey_MaxFrameDelayCount, 1);
+	if (code != noErr)
+		log_osstatus(LOG_WARNING, enc,
+			     "setting kVTCompressionPropertyKey_MaxFrameDelayCount failed, "
+			     "encoder may hold frames and add latency",
 			     code);
 
 	code = session_set_colorspace(s, enc->colorspace);

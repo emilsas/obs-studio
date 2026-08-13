@@ -96,6 +96,11 @@ static inline bool flag_audio(const struct obs_output *output)
 	return (output->info.flags & OBS_OUTPUT_AUDIO) != 0;
 }
 
+static inline bool flag_no_interleave(const struct obs_output *output)
+{
+	return (output->info.flags & OBS_OUTPUT_NO_INTERLEAVE) != 0;
+}
+
 static inline bool log_flag_audio(const struct obs_output *output, const char *func_name)
 {
 	bool ret = flag_audio(output);
@@ -2325,6 +2330,34 @@ static void default_encoded_callback(void *param, struct encoder_packet *packet,
 		obs_encoder_packet_release(packet);
 }
 
+/*
+ * Which encoded-packet callback this output gets. The interleaver is only
+ * needed when both types are present AND the output wants a monotonic muxed
+ * stream; see OBS_OUTPUT_NO_INTERLEAVE for why a per-elementary-stream
+ * transport opts out. Single source for both call sites so start and
+ * reconnect can never disagree about an output's delivery mode.
+ */
+static inline encoded_callback_t choose_encoded_callback(const struct obs_output *output, bool has_video,
+							bool has_audio)
+{
+	if (!has_video || !has_audio)
+		return default_encoded_callback;
+
+	if (flag_no_interleave(output)) {
+		/* Logged because the alternative is indistinguishable from the
+		 * outside: an output built against a libobs without this flag
+		 * sets an unknown bit, keeps getting the interleaver, and looks
+		 * exactly like one where the flag applied but did not help. */
+		blog(LOG_INFO,
+		     "Output '%s': OBS_OUTPUT_NO_INTERLEAVE set — delivering "
+		     "encoded packets per encoder, bypassing the A/V interleaver "
+		     "(no cross-type ordering, no first-keyframe gating)",
+		     obs_output_get_name((obs_output_t *)output));
+		return default_encoded_callback;
+	}
+	return interleave_packets;
+}
+
 static void default_raw_video_callback(void *param, struct video_data *frame)
 {
 	struct obs_output *output = param;
@@ -2496,7 +2529,7 @@ static void hook_data_capture(struct obs_output *output)
 		reset_packet_data(output);
 		pthread_mutex_unlock(&output->interleaved_mutex);
 
-		encoded_callback = (has_video && has_audio) ? interleave_packets : default_encoded_callback;
+		encoded_callback = choose_encoded_callback(output, has_video, has_audio);
 
 		if (output->delay_sec) {
 			output->active_delay_ns = (uint64_t)output->delay_sec * 1000000000ULL;
@@ -2845,7 +2878,7 @@ static void *end_data_capture_thread(void *data)
 		if (output->active_delay_ns)
 			encoded_callback = process_delay;
 		else
-			encoded_callback = (has_video && has_audio) ? interleave_packets : default_encoded_callback;
+			encoded_callback = choose_encoded_callback(output, has_video, has_audio);
 
 		if (has_video)
 			stop_video_encoders(output, encoded_callback);
