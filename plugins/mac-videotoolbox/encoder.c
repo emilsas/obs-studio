@@ -659,28 +659,12 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 			     "frame delay might be increased",
 			     code);
 
-	/* Cap how many frames the encoder may hold before it must emit one.
-	 * Upstream OBS never sets this, so VT defaults to
-	 * kVTUnlimitedFrameDelayCount.
-	 *
-	 * MEASURED: the Apple Silicon hardware encoder
-	 * (com.apple.videotoolbox.videoencoder.ave.avc) REJECTS this with
-	 * kVTPropertyNotSupportedErr (-12900), so on that path it buys nothing --
-	 * the one-frame compression window there comes from the encoder's own
-	 * behaviour, not from this hint. It is kept for the encoders that do
-	 * honour it (the software variants), and skipped under low latency rate
-	 * control, which already enforces one-in-one-out.
-	 *
-	 * Non-fatal on failure, same rationale as RealTime above. */
-	if (!enc->low_latency) {
-		code = session_set_prop_int(s, kVTCompressionPropertyKey_MaxFrameDelayCount, 1);
-		if (code != noErr)
-			log_osstatus(LOG_INFO, enc,
-				     "setting kVTCompressionPropertyKey_MaxFrameDelayCount "
-				     "(not supported by this encoder; it picks its own "
-				     "compression window)",
-				     code);
-	}
+	/* kVTCompressionPropertyKey_MaxFrameDelayCount is deliberately NOT set.
+	 * Every VideoToolbox encoder on Apple Silicon rejects it with
+	 * kVTPropertyNotSupportedErr (-12900) -- measured on the H.264 and HEVC
+	 * hardware encoders and on both software encoders, for values 1, 2 and 13
+	 * -- so it cannot bound the compression window anywhere. Bounding it is
+	 * what low latency rate control is for. */
 
 	code = session_set_colorspace(s, enc->colorspace);
 	if (code != noErr) {
