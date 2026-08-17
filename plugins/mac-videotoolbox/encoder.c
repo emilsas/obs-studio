@@ -543,12 +543,18 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 	code = VTCompressionSessionCreate(kCFAllocatorDefault, enc->width, enc->height, enc->codec_type, encoder_spec,
 					  pixbuf_spec, NULL, &sample_encoded_callback, enc->queue, &s);
 
-	if (code != noErr) {
-		log_osstatus(LOG_ERROR, enc, "VTCompressionSessionCreate", code);
-	}
-
 	CFRelease(encoder_spec);
 	CFRelease(pixbuf_spec);
+
+	if (code != noErr) {
+		/* Returning here rather than carrying on with an unusable session
+		 * matters more with low latency: the specification demands an
+		 * encoder that is both hardware and low-latency capable, so
+		 * kVTCouldNotFindVideoEncoderErr is an expected outcome on hardware
+		 * that has no such encoder, not a should-never-happen. */
+		log_osstatus(LOG_ERROR, enc, "VTCompressionSessionCreate", code);
+		return code;
+	}
 
 	if (enc->low_latency) {
 		/* UsingHardwareAcceleratedVideoEncoder is not readable on a
