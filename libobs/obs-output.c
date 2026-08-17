@@ -2330,13 +2330,6 @@ static void default_encoded_callback(void *param, struct encoder_packet *packet,
 		obs_encoder_packet_release(packet);
 }
 
-/*
- * Which encoded-packet callback this output gets. The interleaver is only
- * needed when both types are present AND the output wants a monotonic muxed
- * stream; see OBS_OUTPUT_NO_INTERLEAVE for why a per-elementary-stream
- * transport opts out. Single source for both call sites so start and
- * reconnect can never disagree about an output's delivery mode.
- */
 static inline encoded_callback_t choose_encoded_callback(const struct obs_output *output, bool has_video,
 							 bool has_audio)
 {
@@ -2518,21 +2511,7 @@ static void hook_data_capture(struct obs_output *output)
 		pthread_mutex_unlock(&output->interleaved_mutex);
 
 		encoded_callback = choose_encoded_callback(output, has_video, has_audio);
-
-		/* Logged because the alternative is indistinguishable from the
-		 * outside: an output built against a libobs without this flag sets
-		 * an unknown bit, keeps getting the interleaver, and looks exactly
-		 * like one where the flag applied but did not help. Logged here
-		 * rather than in choose_encoded_callback because the teardown path
-		 * calls that too, which would repeat this on every stop and every
-		 * reconnect. */
-		if (has_video && has_audio && flag_no_interleave(output))
-			blog(LOG_INFO,
-			     "Output '%s': OBS_OUTPUT_NO_INTERLEAVE set, delivering "
-			     "encoded packets per encoder, bypassing the A/V interleaver "
-			     "(no cross-type ordering, no first-keyframe gating)",
-			     output->context.name);
-
+		
 		if (output->delay_sec) {
 			output->active_delay_ns = (uint64_t)output->delay_sec * 1000000000ULL;
 			output->delay_cur_flags = output->delay_flags;
