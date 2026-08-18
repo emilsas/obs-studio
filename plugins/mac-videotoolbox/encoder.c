@@ -429,46 +429,63 @@ void sample_encoded_callback(void *data, void *source, OSStatus status, VTEncode
 	CFRelease(pixbuf);
 }
 
-static inline CFDictionaryRef create_encoder_spec(const char *vt_encoder_id, bool low_latency)
+/*
+ * The id of the encoder that serves low latency for this codec and size, or NULL
+ * if there is none.
+ *
+ * Low latency is not a mode of the encoders VTCopyVideoEncoderList reports: it
+ * is served by separate ones, "...h264.rtvc" and "...hevc.rtvc" here, which that
+ * list does not include. So the counterpart is asked for rather than assumed,
+ * and a machine without one simply encodes normally.
+ *
+ * VTCopySupportedPropertyDictionaryForEncoder answers which encoder would serve
+ * a specification without creating a session. The real frame size is used
+ * because the answer is allowed to depend on it.
+ *
+ * Returns a string owned by the caller.
+ */
+static char *copy_low_latency_encoder_id(struct vt_encoder *enc)
 {
-	/* Low latency is not a mode of the encoder named by vt_encoder_id: it is a
-	 * DIFFERENT encoder. Measured on an M4, a session asking only for
-	 * EnableLowLatencyRateControl reports its
-	 * kVTCompressionPropertyKey_EncoderID as
-	 * "com.apple.videotoolbox.videoencoder.h264.rtvc"
-	 * ("...hevc.rtvc" for HEVC), not the "...ave.avc" that the encoder entry
-	 * OBS registered uses. Those rtvc encoders do not appear in
-	 * VTCopyVideoEncoderList, so there is no portable way to name one, and
-	 * putting an EncoderID and the low-latency key in one specification is
-	 * rejected outright with kVTParameterErr (-12902) -- distinct from the
-	 * kVTCouldNotFindVideoEncoderErr (-12908) an unknown id returns, so the
-	 * combination is refused as invalid rather than merely unmatched.
-	 *
-	 * Selecting by capability is therefore the only way in, and it means the
-	 * encoder actually used is not the one the user picked. create_encoder logs
-	 * both ids so that substitution is on the record instead of silent.
-	 *
-	 * RequireHardwareAcceleratedVideoEncoder is deliberately NOT set: it makes
-	 * no difference to the selection here (the same rtvc encoder is chosen with
-	 * or without it), it is not honoured when an EncoderID is pinned -- pinning
-	 * the software encoder with it set still creates a session -- and asking
-	 * for it without the low-latency key makes the rtvc encoder itself
-	 * unselectable. It would document a guarantee it does not provide. */
-	if (low_latency) {
-		CFTypeRef keys[1] = {kVTVideoEncoderSpecification_EnableLowLatencyRateControl};
-		CFTypeRef values[1] = {kCFBooleanTrue};
+	CFTypeRef keys[1] = {kVTVideoEncoderSpecification_EnableLowLatencyRateControl};
+	CFTypeRef values[1] = {kCFBooleanTrue};
+	CFDictionaryRef spec = CFDictionaryCreate(kCFAllocatorDefault, keys, values, 1, &kCFTypeDictionaryKeyCallBacks,
+						  &kCFTypeDictionaryValueCallBacks);
 
-		return CFDictionaryCreate(kCFAllocatorDefault, keys, values, 1, &kCFTypeDictionaryKeyCallBacks,
-					  &kCFTypeDictionaryValueCallBacks);
+	CFStringRef id = NULL;
+	OSStatus code = VTCopySupportedPropertyDictionaryForEncoder((int32_t)enc->width, (int32_t)enc->height,
+								    enc->codec_type, spec, &id, NULL);
+	CFRelease(spec);
+
+	if (code != noErr || id == NULL) {
+		if (id != NULL)
+			CFRelease(id);
+		return NULL;
 	}
 
+	char *str = cfstr_copy_cstr(id, kCFStringEncodingUTF8);
+	CFRelease(id);
+
+	return str;
+}
+
+static inline CFDictionaryRef create_encoder_spec(const char *vt_encoder_id, bool low_latency)
+{
 	CFStringRef id = CFStringCreateWithFileSystemRepresentation(NULL, vt_encoder_id);
 
-	CFTypeRef keys[1] = {kVTVideoEncoderSpecification_EncoderID};
-	CFTypeRef values[1] = {id};
+	/* EncoderID is always pinned, so which encoder runs is decided here rather
+	 * than left to VideoToolbox. Under low latency the id is not the selected
+	 * encoder's but its low-latency counterpart's, discovered by
+	 * copy_low_latency_encoder_id, because the key below only works alongside
+	 * one of those: pinning any other encoder together with it fails with
+	 * kVTParameterErr, and pinning a counterpart without it fails with
+	 * kVTCouldNotFindVideoEncoderErr. The two go together or not at all. */
+	CFTypeRef keys[2] = {kVTVideoEncoderSpecification_EncoderID,
+			     kVTVideoEncoderSpecification_EnableLowLatencyRateControl};
+	CFTypeRef values[2] = {id, kCFBooleanTrue};
 
-	CFDictionaryRef encoder_spec = CFDictionaryCreate(
-		kCFAllocatorDefault, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	CFDictionaryRef encoder_spec = CFDictionaryCreate(kCFAllocatorDefault, keys, values, low_latency ? 2 : 1,
+							  &kCFTypeDictionaryKeyCallBacks,
+							  &kCFTypeDictionaryValueCallBacks);
 
 	CFRelease(id);
 
@@ -532,12 +549,33 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 	const char *codec_name = obs_encoder_get_codec(enc->encoder);
 
 	CFDictionaryRef encoder_spec;
+	char *low_latency_id = NULL;
 	if (strcmp(codec_name, "prores") == 0) {
 		struct vt_encoder_type_data *type_data =
 			(struct vt_encoder_type_data *)obs_encoder_get_type_data(enc->encoder);
 		encoder_spec = create_prores_encoder_spec(enc->codec_type, type_data->hardware_accelerated);
 	} else {
-		encoder_spec = create_encoder_spec(enc->vt_encoder_id, enc->low_latency);
+		if (enc->low_latency) {
+			low_latency_id = copy_low_latency_encoder_id(enc);
+
+			if (low_latency_id != NULL) {
+				/* The substitution is the whole mechanism, so it is
+				 * on the record rather than implied. */
+				VT_BLOG(LOG_INFO, "low latency: encoding with '%s' in place of '%s'", low_latency_id,
+					enc->vt_encoder_id);
+			} else {
+				/* Nothing serves the mode here. Better a stream at
+				 * the ordinary latency than no stream. */
+				VT_BLOG(LOG_WARNING,
+					"no low latency encoder for %.4s at %ux%u, "
+					"encoding normally",
+					codec_type_to_print_fmt(enc->codec_type), enc->width, enc->height);
+				enc->low_latency = false;
+			}
+		}
+
+		encoder_spec =
+			create_encoder_spec(low_latency_id ? low_latency_id : enc->vt_encoder_id, enc->low_latency);
 	}
 
 	CFDictionaryRef pixbuf_spec = create_pixbuf_spec(enc);
@@ -551,29 +589,22 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 
 	CFRelease(encoder_spec);
 	CFRelease(pixbuf_spec);
+	bfree(low_latency_id);
 
 	if (enc->low_latency) {
-		/* Name the encoder actually in use. Low latency is served by a
-		 * different encoder than the one this entry was registered for (see
-		 * create_encoder_spec), so this line is the only place the
-		 * substitution is visible; without it the log would keep claiming
-		 * the configured id. UsingHardwareAcceleratedVideoEncoder is not
-		 * readable on such a session, and asking for hardware does not
-		 * reliably constrain the choice, so hw_enc stays unset rather than
-		 * asserting something unverified. */
+		/* Records which encoder actually ran. It is read back rather than
+		 * assumed because the mode reaches an encoder other than the
+		 * selected one, so this is the only place the log tells the truth
+		 * about it. UsingHardwareAcceleratedVideoEncoder is not readable on
+		 * such a session, so hw_enc stays unset rather than asserting
+		 * something unverified. */
 		CFStringRef used = NULL;
-		if (VTSessionCopyProperty(s, kVTCompressionPropertyKey_EncoderID, NULL, &used) == noErr && used) {
-			char *used_str = cfstr_copy_cstr(used, kCFStringEncodingUTF8);
-			VT_BLOG(LOG_INFO, "low latency rate control: using encoder '%s' instead of '%s'",
-				used_str ? used_str : "(unknown)", enc->vt_encoder_id);
-			bfree(used_str);
-		} else {
-			VT_BLOG(LOG_INFO, "low latency rate control: using an encoder chosen by "
-					  "VideoToolbox, its id could not be read");
-		}
-
-		if (used != NULL)
+		if (VTSessionCopyProperty(s, kVTCompressionPropertyKey_EncoderID, NULL, &used) == noErr) {
+			char *str = cfstr_copy_cstr(used, kCFStringEncodingUTF8);
+			VT_BLOG(LOG_INFO, "low latency session on encoder '%s'", str ? str : "(unknown)");
+			bfree(str);
 			CFRelease(used);
+		}
 	} else {
 		CFBooleanRef b = NULL;
 		code = VTSessionCopyProperty(s, kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder, NULL,
@@ -851,10 +882,14 @@ static bool update_params(struct vt_encoder *enc, obs_data_t *settings)
 	enc->rc_max_bitrate_window = obs_data_get_double(settings, "max_bitrate_window");
 	enc->bframes = obs_data_get_bool(settings, "bframes");
 
-	/* Low latency is reached by requiring a hardware encoder rather than by
-	 * EncoderID (see create_encoder_spec), so asking for it on a software
-	 * encoder variant would silently hand back a hardware one. It only exists
-	 * for H.264 and HEVC. */
+	/* An output whose transport wants low latency asks for it through this
+	 * setting; whether it can be honoured is the encoder's call.
+	 *
+	 * The hardware check is what keeps a deliberate choice of the software
+	 * encoder intact: low latency is served by a different encoder
+	 * (see create_encoder), so honouring the request there would swap out the
+	 * very thing the user asked for. Only the hardware entries, whose
+	 * low-latency counterpart is the point of the exercise, take it. */
 	enc->low_latency = false;
 	if (obs_data_get_bool(settings, "low_latency")) {
 		struct vt_encoder_type_data *type_data =
@@ -864,8 +899,8 @@ static bool update_params(struct vt_encoder *enc, obs_data_t *settings)
 		    (enc->codec_type == kCMVideoCodecType_H264 || enc->codec_type == kCMVideoCodecType_HEVC))
 			enc->low_latency = true;
 		else
-			VT_BLOG(LOG_WARNING, "low latency rate control requires a hardware H.264/HEVC "
-					     "encoder, ignoring");
+			VT_BLOG(LOG_INFO, "low latency was requested but this encoder has no low latency "
+					  "counterpart, encoding normally");
 	}
 
 	apply_low_latency_constraints(enc);
@@ -891,13 +926,14 @@ static bool vt_update(void *data, obs_data_t *settings)
 
 	update_params(enc, settings);
 
-	/* Low latency is a property of the compression session's specification, so
-	 * it cannot be toggled on a live session. Keep the value the session was
-	 * actually built with, otherwise session_set_bitrate below would pick the
-	 * rate control branch for a mode this session is not in. */
+	/* Low latency belongs to the compression session's specification, and to
+	 * which encoder that specification selected, so it cannot change on a live
+	 * session. Keep what the session was built with: otherwise
+	 * session_set_bitrate below would take the rate control branch for a mode
+	 * this session is not in. */
 	if (enc->low_latency != old_low_latency) {
-		VT_BLOG(LOG_WARNING, "low latency rate control cannot be changed while encoding, "
-				     "restart the stream to apply it");
+		VT_BLOG(LOG_WARNING, "low latency cannot be changed while encoding, "
+				     "restart the output to apply it");
 		enc->low_latency = old_low_latency;
 		apply_low_latency_constraints(enc);
 	}
@@ -1428,12 +1464,12 @@ static obs_properties_t *vt_properties_h26x(void *data __unused, void *type_data
 
 	obs_properties_add_bool(props, "bframes", obs_module_text("UseBFrames"));
 
-	/* Not a user-facing choice: low latency changes which encoder runs and
-	 * overrides rate control and B-frames, so it is for an output that knows
-	 * its transport wants it, set through the service's
-	 * apply_encoder_settings or obs_encoder_update. Registered but hidden so
-	 * it is discoverable through obs_encoder_get_properties, the same way
-	 * obs-x264 exposes repeat_headers. */
+	/* Not a user-facing choice: an output whose transport wants low latency
+	 * asks for it through its service's apply_encoder_settings or
+	 * obs_encoder_update, and the encoder decides whether it can honour that.
+	 * Registered but hidden so it stays discoverable through
+	 * obs_encoder_get_properties, the same way obs-x264 exposes
+	 * repeat_headers. */
 	p = obs_properties_add_bool(props, "low_latency", "low_latency");
 	obs_property_set_visible(p, false);
 
