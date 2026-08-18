@@ -287,19 +287,7 @@ static OSStatus session_set_bitrate(VTCompressionSessionRef session, const char 
 		can_limit_bitrate = true;
 
 		if (low_latency) {
-			/* The low-latency rate controller rejects ConstantBitRate
-			 * with kVTPropertyNotSupportedErr, so use ABR, which is the
-			 * mode Apple documents for low-latency operation. Checked
-			 * before the macOS 13 branch below because low latency is
-			 * available from macOS 11.3, so on 11.3 to 12.x that branch
-			 * would blame the OS version for a fallback that low latency
-			 * causes on every version.
-			 *
-			 * can_limit_bitrate is cleared for the same reason the
-			 * Apple Silicon CBR path clears it: while rate control reads
-			 * CBR the properties view hides limit_bitrate and its
-			 * companions, so honouring a stale value would apply data
-			 * rate limits the user cannot see or edit. */
+			// TODO: This should also pop up as a warning window when low latency is selected and CBR is checked
 			VT_LOG(LOG_WARNING, "CBR is not supported with low latency rate control. "
 					    "Will use ABR instead.");
 			can_limit_bitrate = false;
@@ -443,25 +431,34 @@ void sample_encoded_callback(void *data, void *source, OSStatus status, VTEncode
 
 static inline CFDictionaryRef create_encoder_spec(const char *vt_encoder_id, bool low_latency)
 {
-	/* The low-latency encoder cannot be reached by EncoderID: it does not
-	 * appear in VTCopyVideoEncoderList, and asking for an enumerated encoder
-	 * AND the low-latency mode in the same specification makes
-	 * VTCompressionSessionCreate fail with kVTCouldNotFindVideoEncoderErr. So
-	 * select by capability instead of by identity and let VideoToolbox pick an
-	 * encoder that supports the mode.
+	/* Low latency is not a mode of the encoder named by vt_encoder_id: it is a
+	 * DIFFERENT encoder. Measured on an M4, a session asking only for
+	 * EnableLowLatencyRateControl reports its
+	 * kVTCompressionPropertyKey_EncoderID as
+	 * "com.apple.videotoolbox.videoencoder.h264.rtvc"
+	 * ("...hevc.rtvc" for HEVC), not the "...ave.avc" that the encoder entry
+	 * OBS registered uses. Those rtvc encoders do not appear in
+	 * VTCopyVideoEncoderList, so there is no portable way to name one, and
+	 * putting an EncoderID and the low-latency key in one specification is
+	 * rejected outright with kVTParameterErr (-12902) -- distinct from the
+	 * kVTCouldNotFindVideoEncoderErr (-12908) an unknown id returns, so the
+	 * combination is refused as invalid rather than merely unmatched.
 	 *
-	 * Requiring hardware keeps this from silently substituting a software
-	 * encoder, but it cannot pin one specific hardware encoder: a machine that
-	 * exposes more than one per codec, such as an Intel Mac where the T2 chip
-	 * adds a second HEVC encoder, may get the other one. VideoToolbox has to
-	 * choose one that supports low latency, so the alternative would be no
-	 * session at all. */
+	 * Selecting by capability is therefore the only way in, and it means the
+	 * encoder actually used is not the one the user picked. create_encoder logs
+	 * both ids so that substitution is on the record instead of silent.
+	 *
+	 * RequireHardwareAcceleratedVideoEncoder is deliberately NOT set: it makes
+	 * no difference to the selection here (the same rtvc encoder is chosen with
+	 * or without it), it is not honoured when an EncoderID is pinned -- pinning
+	 * the software encoder with it set still creates a session -- and asking
+	 * for it without the low-latency key makes the rtvc encoder itself
+	 * unselectable. It would document a guarantee it does not provide. */
 	if (low_latency) {
-		CFTypeRef keys[2] = {kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder,
-				     kVTVideoEncoderSpecification_EnableLowLatencyRateControl};
-		CFTypeRef values[2] = {kCFBooleanTrue, kCFBooleanTrue};
+		CFTypeRef keys[1] = {kVTVideoEncoderSpecification_EnableLowLatencyRateControl};
+		CFTypeRef values[1] = {kCFBooleanTrue};
 
-		return CFDictionaryCreate(kCFAllocatorDefault, keys, values, 2, &kCFTypeDictionaryKeyCallBacks,
+		return CFDictionaryCreate(kCFAllocatorDefault, keys, values, 1, &kCFTypeDictionaryKeyCallBacks,
 					  &kCFTypeDictionaryValueCallBacks);
 	}
 
@@ -552,23 +549,37 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 	CFRelease(pixbuf_spec);
 
 	if (code != noErr) {
-		/* Returning here rather than carrying on with an unusable session
-		 * matters more with low latency: the specification demands an
-		 * encoder that is both hardware and low-latency capable, so
-		 * kVTCouldNotFindVideoEncoderErr is an expected outcome on hardware
-		 * that has no such encoder, not a should-never-happen. */
+		/* Returning here rather than carrying on with an unusable session:
+		 * every property call below would run against a session that does
+		 * not exist, and vt_create would report success. Low latency makes
+		 * this reachable, since it depends on an encoder the machine may
+		 * not have. */
 		log_osstatus(LOG_ERROR, enc, "VTCompressionSessionCreate", code);
 		return code;
 	}
 
 	if (enc->low_latency) {
-		/* UsingHardwareAcceleratedVideoEncoder is not readable on a
-		 * low-latency session (VTSessionCopyProperty fails), but the
-		 * specification required a hardware encoder and the session was
-		 * created, which is the proof. Reading it would report "no
-		 * hardware" and make the log contradict the configuration. */
-		enc->hw_enc = true;
-		VT_BLOG(LOG_INFO, "session created with hardware encoding, low latency rate control");
+		/* Name the encoder actually in use. Low latency is served by a
+		 * different encoder than the one this entry was registered for (see
+		 * create_encoder_spec), so this line is the only place the
+		 * substitution is visible; without it the log would keep claiming
+		 * the configured id. UsingHardwareAcceleratedVideoEncoder is not
+		 * readable on such a session, and asking for hardware does not
+		 * reliably constrain the choice, so hw_enc stays unset rather than
+		 * asserting something unverified. */
+		CFStringRef used = NULL;
+		if (VTSessionCopyProperty(s, kVTCompressionPropertyKey_EncoderID, NULL, &used) == noErr && used) {
+			char *used_str = cfstr_copy_cstr(used, kCFStringEncodingUTF8);
+			VT_BLOG(LOG_INFO, "low latency rate control: using encoder '%s' instead of '%s'",
+				used_str ? used_str : "(unknown)", enc->vt_encoder_id);
+			bfree(used_str);
+		} else {
+			VT_BLOG(LOG_INFO, "low latency rate control: using an encoder chosen by "
+					  "VideoToolbox, its id could not be read");
+		}
+
+		if (used != NULL)
+			CFRelease(used);
 	} else {
 		CFBooleanRef b = NULL;
 		code = VTSessionCopyProperty(s, kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder, NULL,
@@ -1363,23 +1374,6 @@ static bool rate_control_limit_bitrate_modified(obs_properties_t *ppts, obs_prop
 	return true;
 }
 
-/* Low latency rate control ignores B-frames and does not support Spatial AQ, so
- * hide both rather than leave controls on screen that no longer do anything.
- * Rate control is left alone: the mode falls back from CBR to ABR the same way
- * the encoder already falls back where CBR is unavailable, and it warns. */
-static bool low_latency_modified(obs_properties_t *ppts, obs_property_t *p, obs_data_t *settings)
-{
-	const bool low_latency = obs_data_get_bool(settings, "low_latency");
-
-	p = obs_properties_get(ppts, "bframes");
-	if (p)
-		obs_property_set_visible(p, !low_latency);
-	p = obs_properties_get(ppts, "spatial_aq_mode");
-	if (p)
-		obs_property_set_visible(p, !low_latency);
-	return true;
-}
-
 static obs_properties_t *vt_properties_h26x(void *data __unused, void *type_data)
 {
 	struct vt_encoder_type_data *encoder_type_data = type_data;
@@ -1440,11 +1434,14 @@ static obs_properties_t *vt_properties_h26x(void *data __unused, void *type_data
 
 	obs_properties_add_bool(props, "bframes", obs_module_text("UseBFrames"));
 
-	if (encoder_type_data->hardware_accelerated) {
-		p = obs_properties_add_bool(props, "low_latency", obs_module_text("LowLatency"));
-		obs_property_set_long_description(p, obs_module_text("LowLatency.Desc"));
-		obs_property_set_modified_callback(p, low_latency_modified);
-	}
+	/* Not a user-facing choice: low latency changes which encoder runs and
+	 * overrides rate control and B-frames, so it is for an output that knows
+	 * its transport wants it, set through the service's
+	 * apply_encoder_settings or obs_encoder_update. Registered but hidden so
+	 * it is discoverable through obs_encoder_get_properties, the same way
+	 * obs-x264 exposes repeat_headers. */
+	p = obs_properties_add_bool(props, "low_latency", "low_latency");
+	obs_property_set_visible(p, false);
 
 	if (__builtin_available(macOS 15.0, *)) {
 		p = obs_properties_add_list(props, "spatial_aq_mode", obs_module_text("SpatialAQ"), OBS_COMBO_TYPE_LIST,
