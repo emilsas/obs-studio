@@ -545,18 +545,12 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 	code = VTCompressionSessionCreate(kCFAllocatorDefault, enc->width, enc->height, enc->codec_type, encoder_spec,
 					  pixbuf_spec, NULL, &sample_encoded_callback, enc->queue, &s);
 
+	if (code != noErr) {
+		log_osstatus(LOG_ERROR, enc, "VTCompressionSessionCreate", code);
+	}
+
 	CFRelease(encoder_spec);
 	CFRelease(pixbuf_spec);
-
-	if (code != noErr) {
-		/* Returning here rather than carrying on with an unusable session:
-		 * every property call below would run against a session that does
-		 * not exist, and vt_create would report success. Low latency makes
-		 * this reachable, since it depends on an encoder the machine may
-		 * not have. */
-		log_osstatus(LOG_ERROR, enc, "VTCompressionSessionCreate", code);
-		return code;
-	}
 
 	if (enc->low_latency) {
 		/* Name the encoder actually in use. Low latency is served by a
