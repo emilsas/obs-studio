@@ -532,15 +532,12 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 	} else {
 		if (enc->low_latency) {
 			low_latency_id = copy_low_latency_encoder_id(enc);
-
 			// Not every encoder supports low latency but we don't want to override the selected encoder
 			// This returns the .rtvc variant of the encoder
 			if (low_latency_id != NULL) {
 				VT_BLOG(LOG_INFO, "low latency: encoding with '%s' in place of '%s'", low_latency_id,
 					enc->vt_encoder_id);
 			} else {
-				/* Nothing serves the mode here. Better a stream at
-				 * the ordinary latency than no stream. */
 				VT_BLOG(LOG_WARNING,
 					"no low latency encoder for %.4s at %ux%u, "
 					"encoding normally",
