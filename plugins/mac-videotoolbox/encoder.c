@@ -1411,9 +1411,6 @@ static obs_properties_t *vt_properties_h26x(void *data __unused, void *type_data
 
 	obs_properties_add_bool(props, "bframes", obs_module_text("UseBFrames"));
 
-	p = obs_properties_add_bool(props, "low_latency", "low_latency");
-	obs_property_set_visible(p, false);
-
 	if (__builtin_available(macOS 15.0, *)) {
 		p = obs_properties_add_list(props, "spatial_aq_mode", obs_module_text("SpatialAQ"), OBS_COMBO_TYPE_LIST,
 					    OBS_COMBO_FORMAT_INT);
@@ -1421,6 +1418,10 @@ static obs_properties_t *vt_properties_h26x(void *data __unused, void *type_data
 		obs_property_list_add_int(p, obs_module_text("SpatialAQ.Disabled"), AQ_DISABLED);
 		obs_property_list_add_int(p, obs_module_text("SpatialAQ.Enabled"), AQ_ENABLED);
 	}
+
+	// Not client-facing but should be listed under obs_encoder_get_properties
+	p = obs_properties_add_bool(props, "low_latency", "low_latency");
+	obs_property_set_visible(p, false);
 
 	return props;
 }
