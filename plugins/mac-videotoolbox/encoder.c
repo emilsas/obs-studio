@@ -765,27 +765,6 @@ static SetVideoFormatResult set_video_format(struct vt_encoder *enc, enum video_
 	return kResultColorFormatUnsupported;
 }
 
-/*
- * What low latency forces on other settings. Called from everywhere
- * enc->low_latency is established, so a session can never end up in the mode
- * while another field still describes the mode it is not in.
- */
-static inline void apply_low_latency_constraints(struct vt_encoder *enc)
-{
-	if (!enc->low_latency)
-		return;
-
-	/* The mode has no frame reordering and ignores AllowFrameReordering:
-	 * measured at 1080p60, asking for it produced no reordered frame and the
-	 * encoder still emitted from the same encode call. Leaving bframes set
-	 * would therefore be more than cosmetic, because parse_sample uses it to
-	 * decide whether to imitate x264's negative DTS: this mode always reports
-	 * a valid DTS equal to the PTS, so the offset would be subtracted from
-	 * every frame with no reordering to justify it, and that is what reaches
-	 * the output. */
-	enc->bframes = false;
-}
-
 static bool update_params(struct vt_encoder *enc, obs_data_t *settings)
 {
 	video_t *video = obs_encoder_video(enc->encoder);
@@ -850,7 +829,9 @@ static bool update_params(struct vt_encoder *enc, obs_data_t *settings)
 					  "counterpart, encoding normally");
 	}
 
-	apply_low_latency_constraints(enc);
+	// TODO: test without this
+	if (enc->low_latency)
+		enc->bframes = false;
 
 	enum aq_mode spatial_aq_mode = obs_data_get_int(settings, "spatial_aq_mode");
 	if (spatial_aq_mode == AQ_AUTO) {
@@ -882,7 +863,9 @@ static bool vt_update(void *data, obs_data_t *settings)
 		VT_BLOG(LOG_WARNING, "low latency cannot be changed while encoding, "
 				     "restart the output to apply it");
 		enc->low_latency = old_low_latency;
-		apply_low_latency_constraints(enc);
+		// TODO: test without this
+		if (enc->low_latency)
+			enc->bframes = false;
 	}
 
 	if (old_bitrate == enc->bitrate && old_limit_bitrate == enc->limit_bitrate)
