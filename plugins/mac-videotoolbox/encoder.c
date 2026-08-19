@@ -566,7 +566,6 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 	CFRelease(pixbuf_spec);
 	bfree(low_latency_id);
 
-	/* A low-latency session cannot report this, so hw_enc reads off there. */
 	CFBooleanRef b = NULL;
 	code = VTSessionCopyProperty(s, kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder, NULL, &b);
 
@@ -629,11 +628,7 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 			return code;
 		}
 
-		/* Spatial AQ "must be disabled when low latency rate control is
-		 * enabled" per VTCompressionProperties.h, and the session does
-		 * reject it with kVTPropertyNotSupportedErr (-12900). Skip it
-		 * entirely instead of setting it and logging a warning for a
-		 * combination we already know is invalid. */
+		// Spatial AQ "must be disabled when low latency rate control is enabled" per VTCompressionProperties.h
 		if (!enc->low_latency) {
 			if (__builtin_available(macOS 15.0, *)) {
 				int spatial_aq = enc->spatial_aq ? kVTQPModulationLevel_Default
