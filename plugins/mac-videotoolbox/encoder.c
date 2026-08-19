@@ -440,11 +440,8 @@ static char *copy_low_latency_encoder_id(struct vt_encoder *enc)
 								    enc->codec_type, spec, &id, NULL);
 	CFRelease(spec);
 
-	if (code != noErr || id == NULL) {
-		if (id != NULL)
-			CFRelease(id);
+	if (code != noErr || id == NULL)
 		return NULL;
-	}
 
 	char *str = cfstr_copy_cstr(id, kCFStringEncodingUTF8);
 	CFRelease(id);
@@ -452,15 +449,18 @@ static char *copy_low_latency_encoder_id(struct vt_encoder *enc)
 	return str;
 }
 
-static inline CFDictionaryRef create_encoder_spec(const char *vt_encoder_id, bool low_latency)
+static inline CFDictionaryRef create_encoder_spec(const char *vt_encoder_id, const char *low_latency_id)
 {
-	CFStringRef id = CFStringCreateWithFileSystemRepresentation(NULL, vt_encoder_id);
+	const bool low_latency = low_latency_id != NULL;
+	CFStringRef id = CFStringCreateWithFileSystemRepresentation(NULL, low_latency ? low_latency_id : vt_encoder_id);
+
 	CFTypeRef keys[2] = {kVTVideoEncoderSpecification_EncoderID,
 			     kVTVideoEncoderSpecification_EnableLowLatencyRateControl};
-	CFTypeRef values[2] = {id, low_latency ? kCFBooleanTrue : kCFBooleanFalse};
+	CFTypeRef values[2] = {id, kCFBooleanTrue};
 
-	CFDictionaryRef encoder_spec = CFDictionaryCreate(
-		kCFAllocatorDefault, keys, values, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	CFDictionaryRef encoder_spec = CFDictionaryCreate(kCFAllocatorDefault, keys, values, low_latency ? 2 : 1,
+							  &kCFTypeDictionaryKeyCallBacks,
+							  &kCFTypeDictionaryValueCallBacks);
 
 	CFRelease(id);
 
@@ -546,8 +546,7 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 			}
 		}
 
-		encoder_spec =
-			create_encoder_spec(low_latency_id ? low_latency_id : enc->vt_encoder_id, enc->low_latency);
+		encoder_spec = create_encoder_spec(enc->vt_encoder_id, low_latency_id);
 	}
 
 	CFDictionaryRef pixbuf_spec = create_pixbuf_spec(enc);
@@ -805,7 +804,7 @@ static bool update_params(struct vt_encoder *enc, obs_data_t *settings)
 	enc->rc_max_bitrate_window = obs_data_get_double(settings, "max_bitrate_window");
 	enc->bframes = obs_data_get_bool(settings, "bframes");
 	enc->low_latency = false;
-	
+
 	if (obs_data_get_bool(settings, "low_latency")) {
 		struct vt_encoder_type_data *type_data =
 			(struct vt_encoder_type_data *)obs_encoder_get_type_data(enc->encoder);
@@ -1461,7 +1460,6 @@ static void vt_defaults(obs_data_t *settings, void *data)
 				    type_data->codec_type == kCMVideoCodecType_H264 ? "high" : "main");
 	obs_data_set_default_int(settings, "codec_type", kCMVideoCodecType_AppleProRes422);
 	obs_data_set_default_bool(settings, "bframes", true);
-	obs_data_set_default_bool(settings, "low_latency", false);
 	obs_data_set_default_int(settings, "spatial_aq_mode", AQ_AUTO);
 }
 

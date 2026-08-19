@@ -2511,7 +2511,7 @@ static void hook_data_capture(struct obs_output *output)
 		pthread_mutex_unlock(&output->interleaved_mutex);
 
 		encoded_callback = choose_encoded_callback(output, has_video, has_audio);
-		
+
 		if (output->delay_sec) {
 			output->active_delay_ns = (uint64_t)output->delay_sec * 1000000000ULL;
 			output->delay_cur_flags = output->delay_flags;
