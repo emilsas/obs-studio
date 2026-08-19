@@ -658,13 +658,6 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 			     "frame delay might be increased",
 			     code);
 
-	/* kVTCompressionPropertyKey_MaxFrameDelayCount is deliberately NOT set.
-	 * Every VideoToolbox encoder on Apple Silicon rejects it with
-	 * kVTPropertyNotSupportedErr (-12900) -- measured on the H.264 and HEVC
-	 * hardware encoders and on both software encoders, for values 1, 2 and 13
-	 * -- so it cannot bound the compression window anywhere. Bounding it is
-	 * what low latency rate control is for. */
-
 	code = session_set_colorspace(s, enc->colorspace);
 	if (code != noErr) {
 		return code;
