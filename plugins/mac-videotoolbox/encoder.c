@@ -818,10 +818,6 @@ static bool update_params(struct vt_encoder *enc, obs_data_t *settings)
 					  "counterpart, encoding normally");
 	}
 
-	// TODO: test without this
-	if (enc->low_latency)
-		enc->bframes = false;
-
 	enum aq_mode spatial_aq_mode = obs_data_get_int(settings, "spatial_aq_mode");
 	if (spatial_aq_mode == AQ_AUTO) {
 		/* Only enable by default in CRF mode. */
