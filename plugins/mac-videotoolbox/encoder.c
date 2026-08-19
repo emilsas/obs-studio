@@ -287,7 +287,6 @@ static OSStatus session_set_bitrate(VTCompressionSessionRef session, const char 
 		can_limit_bitrate = true;
 
 		if (low_latency) {
-			// TODO: This should also pop up as a warning window when low latency is selected and CBR is checked
 			VT_LOG(LOG_WARNING, "CBR is not supported with low latency rate control. "
 					    "Will use ABR instead.");
 			can_limit_bitrate = false;
@@ -429,21 +428,6 @@ void sample_encoded_callback(void *data, void *source, OSStatus status, VTEncode
 	CFRelease(pixbuf);
 }
 
-/*
- * The id of the encoder that serves low latency for this codec and size, or NULL
- * if there is none.
- *
- * Low latency is not a mode of the encoders VTCopyVideoEncoderList reports: it
- * is served by separate ones, "...h264.rtvc" and "...hevc.rtvc" here, which that
- * list does not include. So the counterpart is asked for rather than assumed,
- * and a machine without one simply encodes normally.
- *
- * VTCopySupportedPropertyDictionaryForEncoder answers which encoder would serve
- * a specification without creating a session. The real frame size is used
- * because the answer is allowed to depend on it.
- *
- * Returns a string owned by the caller.
- */
 static char *copy_low_latency_encoder_id(struct vt_encoder *enc)
 {
 	CFTypeRef keys[1] = {kVTVideoEncoderSpecification_EnableLowLatencyRateControl};
@@ -471,21 +455,12 @@ static char *copy_low_latency_encoder_id(struct vt_encoder *enc)
 static inline CFDictionaryRef create_encoder_spec(const char *vt_encoder_id, bool low_latency)
 {
 	CFStringRef id = CFStringCreateWithFileSystemRepresentation(NULL, vt_encoder_id);
-
-	/* EncoderID is always pinned, so which encoder runs is decided here rather
-	 * than left to VideoToolbox. Under low latency the id is not the selected
-	 * encoder's but its low-latency counterpart's, discovered by
-	 * copy_low_latency_encoder_id, because the key below only works alongside
-	 * one of those: pinning any other encoder together with it fails with
-	 * kVTParameterErr, and pinning a counterpart without it fails with
-	 * kVTCouldNotFindVideoEncoderErr. The two go together or not at all. */
 	CFTypeRef keys[2] = {kVTVideoEncoderSpecification_EncoderID,
 			     kVTVideoEncoderSpecification_EnableLowLatencyRateControl};
-	CFTypeRef values[2] = {id, kCFBooleanTrue};
+	CFTypeRef values[2] = {id, low_latency ? kCFBooleanTrue : kCFBooleanFalse};
 
-	CFDictionaryRef encoder_spec = CFDictionaryCreate(kCFAllocatorDefault, keys, values, low_latency ? 2 : 1,
-							  &kCFTypeDictionaryKeyCallBacks,
-							  &kCFTypeDictionaryValueCallBacks);
+	CFDictionaryRef encoder_spec = CFDictionaryCreate(
+		kCFAllocatorDefault, keys, values, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 
 	CFRelease(id);
 
