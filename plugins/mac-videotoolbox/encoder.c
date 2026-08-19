@@ -807,16 +807,8 @@ static bool update_params(struct vt_encoder *enc, obs_data_t *settings)
 	enc->rc_max_bitrate = (uint32_t)obs_data_get_int(settings, "max_bitrate");
 	enc->rc_max_bitrate_window = obs_data_get_double(settings, "max_bitrate_window");
 	enc->bframes = obs_data_get_bool(settings, "bframes");
-
-	/* An output whose transport wants low latency asks for it through this
-	 * setting; whether it can be honoured is the encoder's call.
-	 *
-	 * The hardware check is what keeps a deliberate choice of the software
-	 * encoder intact: low latency is served by a different encoder
-	 * (see create_encoder), so honouring the request there would swap out the
-	 * very thing the user asked for. Only the hardware entries, whose
-	 * low-latency counterpart is the point of the exercise, take it. */
 	enc->low_latency = false;
+	
 	if (obs_data_get_bool(settings, "low_latency")) {
 		struct vt_encoder_type_data *type_data =
 			(struct vt_encoder_type_data *)obs_encoder_get_type_data(enc->encoder);
