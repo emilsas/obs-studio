@@ -533,9 +533,9 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 		if (enc->low_latency) {
 			low_latency_id = copy_low_latency_encoder_id(enc);
 
+			// Not every encoder supports low latency but we don't want to override the selected encoder
+			// This returns the .rtvc variant of the encoder
 			if (low_latency_id != NULL) {
-				/* The substitution is the whole mechanism, so it is
-				 * on the record rather than implied. */
 				VT_BLOG(LOG_INFO, "low latency: encoding with '%s' in place of '%s'", low_latency_id,
 					enc->vt_encoder_id);
 			} else {
@@ -566,33 +566,17 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 	CFRelease(pixbuf_spec);
 	bfree(low_latency_id);
 
-	if (enc->low_latency) {
-		/* Records which encoder actually ran. It is read back rather than
-		 * assumed because the mode reaches an encoder other than the
-		 * selected one, so this is the only place the log tells the truth
-		 * about it. UsingHardwareAcceleratedVideoEncoder is not readable on
-		 * such a session, so hw_enc stays unset rather than asserting
-		 * something unverified. */
-		CFStringRef used = NULL;
-		if (VTSessionCopyProperty(s, kVTCompressionPropertyKey_EncoderID, NULL, &used) == noErr) {
-			char *str = cfstr_copy_cstr(used, kCFStringEncodingUTF8);
-			VT_BLOG(LOG_INFO, "low latency session on encoder '%s'", str ? str : "(unknown)");
-			bfree(str);
-			CFRelease(used);
-		}
-	} else {
-		CFBooleanRef b = NULL;
-		code = VTSessionCopyProperty(s, kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder, NULL,
-					     &b);
+	/* A low-latency session cannot report this, so hw_enc reads off there. */
+	CFBooleanRef b = NULL;
+	code = VTSessionCopyProperty(s, kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder, NULL, &b);
 
-		if (code == noErr && (enc->hw_enc = CFBooleanGetValue(b)))
-			VT_BLOG(LOG_INFO, "session created with hardware encoding");
-		else
-			enc->hw_enc = false;
+	if (code == noErr && (enc->hw_enc = CFBooleanGetValue(b)))
+		VT_BLOG(LOG_INFO, "session created with hardware encoding");
+	else
+		enc->hw_enc = false;
 
-		if (b != NULL)
-			CFRelease(b);
-	}
+	if (b != NULL)
+		CFRelease(b);
 
 	if (enc->codec_type == kCMVideoCodecType_H264 || enc->codec_type == kCMVideoCodecType_HEVC) {
 		// This can fail when using GPU hardware encoding
