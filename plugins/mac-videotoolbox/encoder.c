@@ -842,23 +842,8 @@ static bool vt_update(void *data, obs_data_t *settings)
 
 	uint32_t old_bitrate = enc->bitrate;
 	bool old_limit_bitrate = enc->limit_bitrate;
-	bool old_low_latency = enc->low_latency;
 
 	update_params(enc, settings);
-
-	/* Low latency belongs to the compression session's specification, and to
-	 * which encoder that specification selected, so it cannot change on a live
-	 * session. Keep what the session was built with: otherwise
-	 * session_set_bitrate below would take the rate control branch for a mode
-	 * this session is not in. */
-	if (enc->low_latency != old_low_latency) {
-		VT_BLOG(LOG_WARNING, "low latency cannot be changed while encoding, "
-				     "restart the output to apply it");
-		enc->low_latency = old_low_latency;
-		// TODO: test without this
-		if (enc->low_latency)
-			enc->bframes = false;
-	}
 
 	if (old_bitrate == enc->bitrate && old_limit_bitrate == enc->limit_bitrate)
 		return true;
