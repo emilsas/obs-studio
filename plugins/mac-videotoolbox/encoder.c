@@ -1411,12 +1411,6 @@ static obs_properties_t *vt_properties_h26x(void *data __unused, void *type_data
 
 	obs_properties_add_bool(props, "bframes", obs_module_text("UseBFrames"));
 
-	/* Not a user-facing choice: an output whose transport wants low latency
-	 * asks for it through its service's apply_encoder_settings or
-	 * obs_encoder_update, and the encoder decides whether it can honour that.
-	 * Registered but hidden so it stays discoverable through
-	 * obs_encoder_get_properties, the same way obs-x264 exposes
-	 * repeat_headers. */
 	p = obs_properties_add_bool(props, "low_latency", "low_latency");
 	obs_property_set_visible(p, false);
 
