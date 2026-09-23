@@ -126,6 +126,8 @@ private:
 	std::vector<FFmpegFormat> formats;
 
 	OBSPropertiesView *streamProperties = nullptr;
+	QString streamPropertiesId;
+
 	OBSPropertiesView *streamEncoderProps = nullptr;
 	OBSPropertiesView *recordEncoderProps = nullptr;
 
@@ -247,6 +249,10 @@ private:
 	inline bool IsWHIP() const;
 	int FindService(const std::function<bool(const ServiceItemData &)> &predicate);
 	void LoadServices(bool showAll);
+	void LoadServicePropertiesView();
+	void ClearServicePropertiesView();
+	OBSData SeedServicePropertiesSettings(const char *serviceId) const;
+	void MergeServiceProperties(obs_data_t *settings) const;
 	void OnOAuthStreamKeyConnected();
 	void OnAuthConnected();
 	QString lastService;
